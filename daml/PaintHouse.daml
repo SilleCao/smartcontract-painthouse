@@ -1,0 +1,149 @@
+module PaintHouse where
+
+import Daml.Script
+
+data TradeData = TradeData with
+    srcBank: Party
+    srcOwner: Party
+    srcAccountNumber: Text
+    destBank: Party
+    destOwner: Party
+    destAccountNumber: Text
+    money: Decimal
+  deriving (Eq, Show)
+
+template Bank with
+    bank: Party
+    alias: Text
+  where
+    signatory bank
+    key bank: Party
+    maintainer key
+    nonconsuming choice CreateAccount: ContractId Account
+      with
+        owner: Party
+        accountNumber: Text
+        balance: Decimal
+      controller bank
+      do
+        create Account with bank, owner, accountNumber, balance
+
+
+template Account with
+    bank: Party
+    owner: Party
+    accountNumber: Text
+    balance: Decimal
+  where
+    signatory bank
+    observer owner
+    key (bank, owner, accountNumber): (Party, Party, Text)
+    maintainer key._1
+    nonconsuming choice Account_WithDraw: ContractId Account
+      with
+        tradeData: TradeData
+      controller owner
+      do
+        exerciseByKey @Account (tradeData.srcBank, tradeData.srcOwner, tradeData.srcAccountNumber) Account_HandleBalance with operationType="Withdraw", tradeData
+    choice Account_HandleBalance: ContractId Account
+      with
+        tradeData: TradeData
+        operationType: Text
+      controller bank
+      do
+        case operationType of
+          "Withdraw" -> create this with balance = balance - tradeData.money
+          "Deposit"  -> create this with balance = balance + tradeData.money
+          _ -> create this
+
+
+template PaintHouseProposal
+  with
+    employer: Party
+    employee: Party
+    price: Decimal
+    content: Text
+    remark: Optional Text
+  where
+    signatory employer
+    observer employee
+    choice AcceptProposal : (ContractId PaintHouseAgreement, ContractId PaymentReceipt)
+      with
+        tradeData: TradeData
+      controller employee
+      do
+        phaCid <- create PaintHouseAgreement with
+          ..     
+        prCid <- create PaymentReceipt with
+          status="WAITING_FOR_PAY"
+          ..
+        return (phaCid, prCid)
+
+template PaintHouseAgreement
+  with
+    employer: Party
+    employee: Party
+    price: Decimal
+    content: Text
+    remark: Optional Text
+  where
+    signatory employer, employee
+    
+
+template PaymentReceipt
+  with
+    tradeData : TradeData
+    status: Text
+  where
+    signatory tradeData.srcOwner
+    observer tradeData.destOwner 
+    choice ConfirmDoneAndPay : ContractId PaymentReceipt
+      controller tradeData.srcOwner
+      do
+        exerciseByKey @Account (tradeData.srcBank, tradeData.srcOwner, tradeData.srcAccountNumber) Account_WithDraw with tradeData
+        create this with status="PAID"
+          
+    
+  
+
+test = script do
+  alice <- allocateParty "Alice"
+  debug alice
+  bob <- allocateParty "Bob"
+  bank <- allocateParty "ICBC"
+  debug bank
+
+  bankCid <- submit bank do createCmd Bank with bank=bank, alias="ICBC"
+  debug bankCid
+
+  submit bank do exerciseCmd bankCid CreateAccount with owner=alice, accountNumber="123456", balance=100.0
+  submit bank do exerciseCmd bankCid CreateAccount with owner=bob, accountNumber="654321", balance=0.0
+
+  phpCid <- submit alice 
+    do createCmd PaintHouseProposal with 
+        employer=alice
+        employee=bob 
+        price=50.0
+        content="Alice hire Bob to paint her house"
+        remark= None
+
+  let 
+    tradeData = TradeData 
+      with
+        srcBank=bank
+        srcOwner=alice
+        srcAccountNumber="123456"
+        destBank=bank
+        destOwner=bob
+        destAccountNumber="654321"
+        money=50.0
+  (phaCid, prCid) <- submit bob do exerciseCmd phpCid AcceptProposal with tradeData
+  debug phaCid
+  debug prCid
+
+  submit alice do exerciseCmd prCid ConfirmDoneAndPay
+  submit bank do exerciseByKeyCmd @Account (tradeData.destBank, tradeData.destOwner, tradeData.destAccountNumber) Account_HandleBalance with operationType="Deposit", tradeData
+
+  return ()
+    
+

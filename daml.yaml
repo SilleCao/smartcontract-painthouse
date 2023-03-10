@@ -1,0 +1,12 @@
+sdk-version: 2.5.3
+name: smartcontract-daml
+version: 1.0.0
+source: daml
+parties:
+  - Alice
+  - Bob
+  - Bank
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script
